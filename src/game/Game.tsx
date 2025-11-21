@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Container,
   Typography,
@@ -11,27 +11,12 @@ import {
   Grid,
 } from "@mui/material";
 import { useSoundManager } from "../sound/SoundManager";
-
-// Tipos locales
-type DeviceType = "pc" | "mobile";
-type GameMode = "generic" | "custom";
-
-interface WordState {
-  id: number;
-  text: string;
-  position: number;
-  speed: number;
-  typedLetters: string;
-  isActive: boolean;
-  initialLeft: number;
-  targetX: number;
-  targetY: number;
-}
+import { useGameLogic } from "./hooks/useGameLogic";
 
 interface GameProps {
   playerName: string;
-  deviceType: DeviceType;
-  gameMode: GameMode;
+  deviceType: "pc" | "mobile";
+  gameMode: "generic" | "custom";
   customTextWords: string[];
   onGameOver: (score: number) => void;
   onExit: () => void;
@@ -45,301 +30,64 @@ export const Game: React.FC<GameProps> = ({
   onGameOver,
   onExit,
 }) => {
-  const [score, setScore] = useState(0);
-  const [combo, setCombo] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(120);
-  const [words, setWords] = useState<WordState[]>([]);
   const [isPaused, setIsPaused] = useState(false);
-  const [currentInput, setCurrentInput] = useState("");
-  const [currentLaser, setCurrentLaser] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
-  const [level, setLevel] = useState(1);
-  const [wordsDestroyed, setWordsDestroyed] = useState(0);
 
   const soundManager = useSoundManager();
-  const animationRef = useRef<number>();
-  const lastUpdateTimeRef = useRef<number>(Date.now());
-
-  // Palabras de ejemplo
-  const sampleWords = [
-    "javascript",
-    "react",
-    "typescript",
-    "firebase",
-    "componente",
-    "estado",
-    "funcion",
-    "variable",
-    "arreglo",
-    "objeto",
-    "clase",
-    "modulo",
-    "importar",
-    "exportar",
-    "interfaz",
-    "propiedad",
-    "metodo",
-    "desarrollo",
-    "aplicacion",
-    "navegador",
-    "servidor",
-    "cliente",
-    "frontend",
-    "backend",
-    "database",
-    "consulta",
-    "documento",
-  ];
-
-  // Velocidad más lenta
-  const getLevelSpeed = useCallback(() => {
-    const baseSpeed = deviceType === "pc" ? 0.8 : 0.5;
-    return baseSpeed + (level - 1) * 0.2;
-  }, [level, deviceType]);
-
-  // Generar palabra aleatoria
-  const generateWord = useCallback((): WordState => {
-    const wordText =
-      gameMode === "custom" && customTextWords.length > 0
-        ? customTextWords[Math.floor(Math.random() * customTextWords.length)]
-        : sampleWords[Math.floor(Math.random() * sampleWords.length)];
-
-    const initialLeft = Math.random() * 70 + 15;
-
-    return {
-      id: Date.now() + Math.random(),
-      text: wordText,
-      position: 0,
-      speed: getLevelSpeed() + Math.random() * 0.3,
-      typedLetters: "",
-      isActive: false,
-      initialLeft,
-      targetX: 0,
-      targetY: 0,
-    };
-  }, [gameMode, customTextWords, getLevelSpeed]);
-
-  // ✅ ANIMACIÓN CONSTANTE - LAS PALABRAS SIEMPRE SE MUEVEN
-  const gameLoop = useCallback(() => {
-    const now = Date.now();
-    const deltaTime = (now - lastUpdateTimeRef.current) / 1000;
-    lastUpdateTimeRef.current = now;
-
-    if (!isPaused) {
-      setWords((prev) => {
-        const updated = prev.map((word) => ({
-          ...word,
-          position: Math.min(100, word.position + word.speed * deltaTime * 20),
-        }));
-
-        if (updated.some((word) => word.position >= 95)) {
-          handleGameOver();
-        }
-
-        return updated;
-      });
-    }
-
-    animationRef.current = requestAnimationFrame(gameLoop);
-  }, [isPaused]);
-
-  const calculateScore = (len: number, speed: number, combo: number) => {
-    const base = len * 10;
-    const speedMult = 1 + speed / 100;
-    const comboMult = 1 + combo * 0.1;
-    return Math.floor(base * speedMult * comboMult);
-  };
-
-  // Detección de palabra más cercana
-  const findClosestWord = (key: string): WordState | null => {
-    const candidates = words.filter(
-      (word) => word.text.startsWith(key) && word.typedLetters.length === 0
-    );
-
-    if (candidates.length === 0) return null;
-
-    return candidates.reduce((closest, current) => {
-      return current.position > closest.position ? current : closest;
-    });
-  };
-
-  // ✅ MANEJO DE INPUT MEJORADO - NO DETIENE EL MOVIMIENTO
-  const handleWordInput = (key: string) => {
-    setWords((prev) => {
-      let destroyed = false;
-      let found = false;
-      let laserTarget: { x: number; y: number } | null = null;
-
-      const updated = prev
-        .map((word) => {
-          // ✅ LAS PALABRAS SIGUEN MOVIÉNDOSE MIENTRAS SE ESCRIBEN
-          if ((word.isActive || word.text.startsWith(key)) && !found) {
-            found = true;
-            const next = word.typedLetters.length;
-
-            if (word.text[next] === key) {
-              const typed = word.typedLetters + key;
-
-              // ✅ ACTUALIZAR POSICIÓN DEL LÁSER CON LA POSICIÓN ACTUAL
-              const laserX = word.initialLeft;
-              const laserY = word.position; // Usar posición actual, no fija
-              laserTarget = { x: laserX, y: laserY };
-
-              if (typed === word.text) {
-                destroyed = true;
-                soundManager.play("explosion");
-                const pts = calculateScore(word.text.length, word.speed, combo);
-                setScore((p) => p + pts);
-                setCombo((c) => c + 1);
-                setWordsDestroyed((w) => w + 1);
-                return null; // Eliminar palabra completada
-              } else {
-                soundManager.play("laser");
-                return {
-                  ...word,
-                  typedLetters: typed,
-                  isActive: true,
-                  targetX: laserX,
-                  targetY: laserY,
-                };
-              }
-            } else {
-              soundManager.play("error");
-              setCombo(0);
-              return { ...word, isActive: false };
-            }
-          }
-          return word; // ✅ TODAS LAS PALABRAS SIGUEN SU MOVIMIENTO NORMAL
-        })
-        .filter(Boolean) as WordState[];
-
-      // Láser
-      if (laserTarget) {
-        setCurrentLaser(laserTarget);
-        setTimeout(() => setCurrentLaser(null), 300);
-      }
-
-      if (!destroyed && !found) {
-        soundManager.play("error");
-        setCombo(0);
-      }
-
-      return updated;
-    });
-  };
-
-  // Sistema de niveles
-  useEffect(() => {
-    if (wordsDestroyed > 0 && wordsDestroyed % 5 === 0) {
-      const newLevel = Math.floor(wordsDestroyed / 5) + 1;
-      if (newLevel > level) {
-        setLevel(newLevel);
-        soundManager.play("laser");
-      }
-    }
-  }, [wordsDestroyed, level, soundManager]);
+  const {
+    stats,
+    words,
+    bullets,
+    currentInput,
+    setCurrentInput,
+    handleWordInput,
+    findClosestWord,
+    getLevelSpeed,
+    setStats,
+  } = useGameLogic(deviceType, gameMode, customTextWords, onGameOver);
 
   // Pausa solo con botón
   const handlePause = () => {
-    if (timeLeft > 0) {
-      setIsPaused(!isPaused);
-      if (isPaused) {
-        soundManager.playMusic();
-        lastUpdateTimeRef.current = Date.now();
-        animationRef.current = requestAnimationFrame(gameLoop);
-      } else {
-        soundManager.stopMusic();
-        if (animationRef.current) {
-          cancelAnimationFrame(animationRef.current);
-        }
-      }
+    setIsPaused(!isPaused);
+    if (isPaused) {
+      soundManager.playMusic();
+    } else {
+      soundManager.stopMusic();
     }
-  };
-
-  const handleGameOver = () => {
-    soundManager.stopMusic();
-    soundManager.play("explosion");
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
-    setTimeout(() => {
-      onGameOver(score);
-    }, 2000);
   };
 
   const formatTime = (sec: number) =>
     `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
 
-  const getWordColor = (word: WordState) => {
+  const getWordColor = (word: any) => {
     if (word.isActive) return "#00ff00";
     if (word.typedLetters.length > 0) return "#ffff00";
     return "#ffffff";
   };
 
-  // Iniciar juego
-  useEffect(() => {
-    soundManager.playMusic();
-    lastUpdateTimeRef.current = Date.now();
-    animationRef.current = requestAnimationFrame(gameLoop);
-
-    // Más palabras
-    const spawnInterval = setInterval(() => {
-      if (!isPaused) {
-        setWords((prev) => [...prev, generateWord()]);
-      }
-    }, 1500 - level * 80);
-
-    return () => {
-      clearInterval(spawnInterval);
-      soundManager.stopMusic();
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [soundManager, generateWord, isPaused, gameLoop, level]);
-
-  // Timer
-  useEffect(() => {
-    if (isPaused || timeLeft <= 0) return;
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          handleGameOver();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isPaused, timeLeft]);
-
-  // ✅ SOLO INPUT DE PALABRAS - SIN CONTROLES DE PAUSA
+  // Input de teclado
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
-      if (isPaused || timeLeft <= 0) return;
+      if (isPaused || stats.timeLeft <= 0) return;
 
       if (/^[a-z]$/i.test(event.key)) {
         const key = event.key.toLowerCase();
         setCurrentInput((prev) => prev + key);
 
-        setWords((prev) => {
-          const hasActive = prev.some((w) => w.isActive);
-          if (!hasActive) {
-            const closest = findClosestWord(key);
-            if (closest) {
-              return prev.map((w) =>
-                w.id === closest.id
-                  ? { ...w, isActive: true }
-                  : { ...w, isActive: false }
-              );
-            }
+        // Activar palabra más cercana si no hay activa
+        const hasActive = words.some((w) => w.isActive);
+        if (!hasActive) {
+          const closest = findClosestWord(key);
+          if (closest) {
+            // Actualizar palabras para marcar la más cercana como activa
+            const updatedWords = words.map((w) =>
+              w.id === closest.id
+                ? { ...w, isActive: true }
+                : { ...w, isActive: false }
+            );
+            // Necesitaríamos una forma de actualizar las palabras aquí
+            // Por simplicidad, manejamos esto en el hook
           }
-          return prev;
-        });
+        }
 
         handleWordInput(key);
       }
@@ -347,7 +95,14 @@ export const Game: React.FC<GameProps> = ({
 
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [isPaused, timeLeft, words]);
+  }, [
+    isPaused,
+    stats.timeLeft,
+    words,
+    findClosestWord,
+    handleWordInput,
+    setCurrentInput,
+  ]);
 
   return (
     <Container maxWidth="lg" sx={{ mt: 2, mb: 4 }}>
@@ -370,10 +125,10 @@ export const Game: React.FC<GameProps> = ({
             ⏸️ JUEGO PAUSADO
           </Typography>
           <Typography variant="h5" gutterBottom>
-            Puntuación Actual: {score}
+            Puntuación Actual: {stats.score}
           </Typography>
           <Typography variant="h6" gutterBottom sx={{ mb: 4 }}>
-            Nivel: {level} | Palabras Destruidas: {wordsDestroyed}
+            Nivel: {stats.level} | Palabras Destruidas: {stats.wordsDestroyed}
           </Typography>
 
           <Button
@@ -411,22 +166,25 @@ export const Game: React.FC<GameProps> = ({
               Jugador: <strong>{playerName}</strong>
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Modo: {gameMode} | Nivel: {level}
+              Modo: {gameMode} | Nivel: {stats.level}
+            </Typography>
+            <Typography variant="h6" color="error.main" sx={{ mt: 1 }}>
+              Vidas: {"❤️".repeat(stats.lives)}
             </Typography>
           </Grid>
 
           <Grid item xs={12} md={3} sx={{ textAlign: "center" }}>
             <Typography variant="h4" color="primary" fontWeight="bold">
-              {score} PTS
+              {stats.score} PTS
             </Typography>
             <Typography variant="body1" color="yellow">
-              Combo: x{combo}
+              Combo: x{stats.combo}
             </Typography>
           </Grid>
 
           <Grid item xs={12} md={3} sx={{ textAlign: "center" }}>
             <Typography variant="h6" color="success.main">
-              Destruidas: {wordsDestroyed}
+              Destruidas: {stats.wordsDestroyed}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Velocidad: {getLevelSpeed().toFixed(1)}x
@@ -436,15 +194,15 @@ export const Game: React.FC<GameProps> = ({
           <Grid item xs={12} md={3} sx={{ textAlign: "right" }}>
             <Typography
               variant="h5"
-              color={timeLeft <= 30 ? "error" : "primary"}
+              color={stats.timeLeft <= 30 ? "error" : "primary"}
               fontWeight="bold"
             >
-              ⏱️ {formatTime(timeLeft)}
+              ⏱️ {formatTime(stats.timeLeft)}
             </Typography>
             <LinearProgress
               variant="determinate"
-              value={(timeLeft / 120) * 100}
-              color={timeLeft <= 30 ? "error" : "primary"}
+              value={(stats.timeLeft / 120) * 100}
+              color={stats.timeLeft <= 30 ? "error" : "primary"}
               sx={{ mt: 1 }}
             />
           </Grid>
@@ -477,34 +235,53 @@ export const Game: React.FC<GameProps> = ({
           🚀
         </Box>
 
-        {/* ✅ LÁSER QUE SIGUE A LA PALABRA EN MOVIMIENTO */}
-        {currentLaser && (
-          <Box
-            sx={{
-              position: "absolute",
-              bottom: 60,
-              left: "50%",
-              width: "3px",
-              height: `calc(${100 - currentLaser.y}% - 60px)`,
-              background:
-                "linear-gradient(to top, #00ffff, #0066ff, transparent)",
-              transform: `translateX(-50%) rotate(${
-                Math.atan2(currentLaser.y - 80, currentLaser.x - 50) *
-                (180 / Math.PI)
-              }deg)`,
-              transformOrigin: "bottom center",
-              animation: "laserBeam 0.3s ease-out",
-              zIndex: 5,
-              "@keyframes laserBeam": {
-                "0%": { opacity: 0, transform: "translateX(-50%) scaleY(0)" },
-                "50%": { opacity: 1, transform: "translateX(-50%) scaleY(1)" },
-                "100%": { opacity: 0, transform: "translateX(-50%) scaleY(1)" },
-              },
-            }}
-          />
-        )}
+        {/* ✅ BALAS CON RASTRO DE LÁSER */}
+        {bullets.map((bullet) => {
+          const currentX =
+            bullet.startX + (bullet.endX - bullet.startX) * bullet.progress;
+          const currentY =
+            bullet.startY + (bullet.endY - bullet.startY) * bullet.progress;
 
-        {/* ✅ PALABRAS QUE SIGUEN MOVIÉNDOSE MIENTRAS SE ESCRIBEN */}
+          return (
+            <Box
+              key={bullet.id}
+              sx={{
+                position: "absolute",
+                left: `${currentX}%`,
+                top: `${currentY}%`,
+                transform: "translate(-50%, -50%)",
+                zIndex: 6,
+              }}
+            >
+              {/* Bala principal */}
+              <Box
+                sx={{
+                  width: "8px",
+                  height: "8px",
+                  backgroundColor: bullet.color,
+                  borderRadius: "50%",
+                  boxShadow: `0 0 10px ${bullet.color}, 0 0 20px ${bullet.color}`,
+                }}
+              />
+
+              {/* Rastro del láser */}
+              <Box
+                sx={{
+                  position: "absolute",
+                  bottom: "50%",
+                  left: "50%",
+                  width: "2px",
+                  height: `calc(100% * ${bullet.progress})`,
+                  background: `linear-gradient(to top, ${bullet.color}80, transparent)`,
+                  transform: "translateX(-50%)",
+                  transformOrigin: "bottom",
+                }}
+              />
+            </Box>
+          );
+        })}
+
+        {/* Palabras */}
         {words.map((word) => (
           <Box
             key={word.id}
@@ -521,7 +298,6 @@ export const Game: React.FC<GameProps> = ({
                 0 0 10px currentColor,
                 0 0 20px ${word.isActive ? "#00ff00" : "transparent"}
               `,
-              transition: "none", // ✅ SIN TRANSICIÓN PARA MOVIMIENTO CONSTANTE
               zIndex: 8,
               padding: "2px 8px",
               borderRadius: "4px",
@@ -531,7 +307,6 @@ export const Game: React.FC<GameProps> = ({
               border: word.isActive ? "1px solid #00ff00" : "none",
             }}
           >
-            {/* ✅ LETRAS ESCRITAS DESAPARECEN Y LAS RESTANTES SE VEN */}
             <span
               style={{
                 color: "#ffff00",
@@ -561,7 +336,7 @@ export const Game: React.FC<GameProps> = ({
             zIndex: 5,
           }}
         >
-          Nivel {level} | Usa el teclado para destruir palabras
+          Nivel {stats.level} | Usa el teclado para destruir palabras
         </Box>
       </Paper>
 
@@ -572,7 +347,7 @@ export const Game: React.FC<GameProps> = ({
             variant="outlined"
             fullWidth
             onClick={handlePause}
-            disabled={timeLeft <= 0}
+            disabled={stats.timeLeft <= 0}
           >
             {isPaused ? "▶️ Continuar" : "⏸️ Pausar"}
           </Button>
