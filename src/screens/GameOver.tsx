@@ -1,62 +1,18 @@
-import React, { useState } from "react";
-import {
-  Button,
-  Typography,
-  Container,
-  Box,
-  Paper,
-  Alert,
-  Snackbar,
-} from "@mui/material";
+import React, { useEffect } from "react";
 import { useGameStore } from "../store/gameStore";
+import { Button, Typography, Container, Box } from "@mui/material";
 
-interface GameOverProps {
-  score: number;
-  playerName: string;
-  onRestart: () => void;
-  onMenu: () => void;
-  onViewLeaderboard: () => void;
-}
+export const GameOver: React.FC = () => {
+  const { finalScore, saveCurrentScore, setScreen, resetGame } = useGameStore(); // <-- Usar Zustand
 
-export const GameOver: React.FC<GameOverProps> = ({
-  score,
-  playerName,
-  onRestart,
-  onMenu,
-  onViewLeaderboard,
-}) => {
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  // Guardar la puntuación automáticamente al entrar en esta pantalla
+  useEffect(() => {
+    saveCurrentScore();
+  }, [saveCurrentScore]);
 
-  const { saveCurrentScore } = useGameStore();
-
-  const handleSaveScore = async () => {
-    setIsSaving(true);
-    setSaveError(null);
-
-    try {
-      await saveCurrentScore();
-      setSaveSuccess(true);
-
-      // Redirigir automáticamente después de guardar
-      setTimeout(() => {
-        onViewLeaderboard();
-      }, 1500);
-    } catch (error: any) {
-      console.error("Error saving score:", error);
-      setSaveError(error.message || "Error desconocido al guardar");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleCloseError = () => {
-    setSaveError(null);
-  };
-
-  const handleCloseSuccess = () => {
-    setSaveSuccess(false);
+  const handleRestart = () => {
+    resetGame();
+    setScreen("deviceSelection"); // Volver a la selección de dispositivo para un nuevo juego
   };
 
   return (
@@ -69,104 +25,38 @@ export const GameOver: React.FC<GameOverProps> = ({
           alignItems: "center",
         }}
       >
-        <Paper elevation={3} sx={{ padding: 4, width: "100%" }}>
-          <Typography component="h1" variant="h4" gutterBottom align="center">
-            🎯 Game Over
-          </Typography>
-
-          <Typography
-            variant="h5"
-            sx={{ mt: 2, mb: 3 }}
-            align="center"
-            color="primary"
+        <Typography component="h1" variant="h4">
+          Game Over
+        </Typography>
+        <Typography variant="h5" sx={{ mt: 2 }}>
+          Tu Puntuación: {finalScore}
+        </Typography>
+        <Box sx={{ mt: 4, width: "100%" }}>
+          <Button
+            variant="outlined"
+            onClick={() => setScreen("leaderboard")}
+            fullWidth
+            sx={{ mb: 2 }}
           >
-            Puntuación: {score}
-          </Typography>
-
-          <Typography
-            variant="body1"
-            sx={{ mb: 3 }}
-            align="center"
-            color="text.secondary"
+            Ver SALÓN DE LA FAMA
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleRestart}
+            fullWidth
+            sx={{ mb: 2 }}
           >
-            ¡Buen trabajo, {playerName}!
-          </Typography>
-
-          <Box sx={{ mt: 4, width: "100%" }}>
-            <Button
-              variant="contained"
-              onClick={handleSaveScore}
-              disabled={isSaving}
-              fullWidth
-              sx={{ mb: 2 }}
-              size="large"
-            >
-              {isSaving ? "🔄 Guardando..." : "💾 Guardar Puntuación"}
-            </Button>
-
-            <Button
-              variant="outlined"
-              onClick={onRestart}
-              fullWidth
-              sx={{ mb: 2 }}
-              size="large"
-            >
-              🎮 Jugar de Nuevo
-            </Button>
-
-            <Button variant="outlined" onClick={onMenu} fullWidth size="large">
-              🏠 Menú Principal
-            </Button>
-          </Box>
-
-          {/* Información sobre Firestore */}
-          <Box
-            sx={{
-              mt: 3,
-              p: 2,
-              backgroundColor: "rgba(0, 0, 0, 0.05)",
-              borderRadius: 1,
-            }}
+            Jugar de Nuevo
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => setScreen("menu")}
+            fullWidth
           >
-            <Typography variant="caption" color="text.secondary" align="center">
-              💡 Si hay errores al guardar, verifica que Firestore esté
-              configurado correctamente.
-            </Typography>
-          </Box>
-        </Paper>
+            Menú Principal
+          </Button>
+        </Box>
       </Box>
-
-      {/* Snackbar para errores */}
-      <Snackbar
-        open={!!saveError}
-        autoHideDuration={6000}
-        onClose={handleCloseError}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          onClose={handleCloseError}
-          severity="error"
-          sx={{ width: "100%" }}
-        >
-          ❌ Error al guardar: {saveError}
-        </Alert>
-      </Snackbar>
-
-      {/* Snackbar para éxito */}
-      <Snackbar
-        open={saveSuccess}
-        autoHideDuration={3000}
-        onClose={handleCloseSuccess}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          onClose={handleCloseSuccess}
-          severity="success"
-          sx={{ width: "100%" }}
-        >
-          ✅ ¡Puntuación guardada correctamente!
-        </Alert>
-      </Snackbar>
     </Container>
   );
 };

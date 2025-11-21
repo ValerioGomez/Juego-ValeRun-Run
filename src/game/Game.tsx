@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Container,
   Typography,
@@ -7,8 +7,8 @@ import {
   Paper,
   Card,
   CardContent,
-  Grid, // ✅ Cambiar a Grid normal
   LinearProgress,
+  Grid,
 } from "@mui/material";
 import { useSoundManager } from "../sound/SoundManager";
 
@@ -19,10 +19,13 @@ type GameMode = "generic" | "custom";
 interface WordState {
   id: number;
   text: string;
-  position: number; // porcentaje de avance (0-100)
+  position: number;
   speed: number;
   typedLetters: string;
   isActive: boolean;
+  initialLeft: number;
+  targetX: number;
+  targetY: number;
 }
 
 interface GameProps {
@@ -44,14 +47,22 @@ export const Game: React.FC<GameProps> = ({
 }) => {
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(120); // 2 minutos
+  const [timeLeft, setTimeLeft] = useState(120);
   const [words, setWords] = useState<WordState[]>([]);
   const [isPaused, setIsPaused] = useState(false);
   const [currentInput, setCurrentInput] = useState("");
+  const [currentLaser, setCurrentLaser] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [level, setLevel] = useState(1);
+  const [wordsDestroyed, setWordsDestroyed] = useState(0);
 
   const soundManager = useSoundManager();
+  const animationRef = useRef<number>();
+  const lastUpdateTimeRef = useRef<number>(Date.now());
 
-  // Palabras de ejemplo para el modo genérico
+  // Palabras de ejemplo
   const sampleWords = [
     "javascript",
     "react",
@@ -70,7 +81,23 @@ export const Game: React.FC<GameProps> = ({
     "interfaz",
     "propiedad",
     "metodo",
+    "desarrollo",
+    "aplicacion",
+    "navegador",
+    "servidor",
+    "cliente",
+    "frontend",
+    "backend",
+    "database",
+    "consulta",
+    "documento",
   ];
+
+  // Velocidad más lenta
+  const getLevelSpeed = useCallback(() => {
+    const baseSpeed = deviceType === "pc" ? 0.8 : 0.5;
+    return baseSpeed + (level - 1) * 0.2;
+  }, [level, deviceType]);
 
   // Generar palabra aleatoria
   const generateWord = useCallback((): WordState => {
@@ -79,39 +106,201 @@ export const Game: React.FC<GameProps> = ({
         ? customTextWords[Math.floor(Math.random() * customTextWords.length)]
         : sampleWords[Math.floor(Math.random() * sampleWords.length)];
 
+    const initialLeft = Math.random() * 70 + 15;
+
     return {
       id: Date.now() + Math.random(),
       text: wordText,
       position: 0,
-      speed: 1 + Math.random() * 2,
+      speed: getLevelSpeed() + Math.random() * 0.3,
       typedLetters: "",
       isActive: false,
+      initialLeft,
+      targetX: 0,
+      targetY: 0,
     };
-  }, [gameMode, customTextWords]);
+  }, [gameMode, customTextWords, getLevelSpeed]);
+
+  // ✅ ANIMACIÓN CONSTANTE - LAS PALABRAS SIEMPRE SE MUEVEN
+  const gameLoop = useCallback(() => {
+    const now = Date.now();
+    const deltaTime = (now - lastUpdateTimeRef.current) / 1000;
+    lastUpdateTimeRef.current = now;
+
+    if (!isPaused) {
+      setWords((prev) => {
+        const updated = prev.map((word) => ({
+          ...word,
+          position: Math.min(100, word.position + word.speed * deltaTime * 20),
+        }));
+
+        if (updated.some((word) => word.position >= 95)) {
+          handleGameOver();
+        }
+
+        return updated;
+      });
+    }
+
+    animationRef.current = requestAnimationFrame(gameLoop);
+  }, [isPaused]);
+
+  const calculateScore = (len: number, speed: number, combo: number) => {
+    const base = len * 10;
+    const speedMult = 1 + speed / 100;
+    const comboMult = 1 + combo * 0.1;
+    return Math.floor(base * speedMult * comboMult);
+  };
+
+  // Detección de palabra más cercana
+  const findClosestWord = (key: string): WordState | null => {
+    const candidates = words.filter(
+      (word) => word.text.startsWith(key) && word.typedLetters.length === 0
+    );
+
+    if (candidates.length === 0) return null;
+
+    return candidates.reduce((closest, current) => {
+      return current.position > closest.position ? current : closest;
+    });
+  };
+
+  // ✅ MANEJO DE INPUT MEJORADO - NO DETIENE EL MOVIMIENTO
+  const handleWordInput = (key: string) => {
+    setWords((prev) => {
+      let destroyed = false;
+      let found = false;
+      let laserTarget: { x: number; y: number } | null = null;
+
+      const updated = prev
+        .map((word) => {
+          // ✅ LAS PALABRAS SIGUEN MOVIÉNDOSE MIENTRAS SE ESCRIBEN
+          if ((word.isActive || word.text.startsWith(key)) && !found) {
+            found = true;
+            const next = word.typedLetters.length;
+
+            if (word.text[next] === key) {
+              const typed = word.typedLetters + key;
+
+              // ✅ ACTUALIZAR POSICIÓN DEL LÁSER CON LA POSICIÓN ACTUAL
+              const laserX = word.initialLeft;
+              const laserY = word.position; // Usar posición actual, no fija
+              laserTarget = { x: laserX, y: laserY };
+
+              if (typed === word.text) {
+                destroyed = true;
+                soundManager.play("explosion");
+                const pts = calculateScore(word.text.length, word.speed, combo);
+                setScore((p) => p + pts);
+                setCombo((c) => c + 1);
+                setWordsDestroyed((w) => w + 1);
+                return null; // Eliminar palabra completada
+              } else {
+                soundManager.play("laser");
+                return {
+                  ...word,
+                  typedLetters: typed,
+                  isActive: true,
+                  targetX: laserX,
+                  targetY: laserY,
+                };
+              }
+            } else {
+              soundManager.play("error");
+              setCombo(0);
+              return { ...word, isActive: false };
+            }
+          }
+          return word; // ✅ TODAS LAS PALABRAS SIGUEN SU MOVIMIENTO NORMAL
+        })
+        .filter(Boolean) as WordState[];
+
+      // Láser
+      if (laserTarget) {
+        setCurrentLaser(laserTarget);
+        setTimeout(() => setCurrentLaser(null), 300);
+      }
+
+      if (!destroyed && !found) {
+        soundManager.play("error");
+        setCombo(0);
+      }
+
+      return updated;
+    });
+  };
+
+  // Sistema de niveles
+  useEffect(() => {
+    if (wordsDestroyed > 0 && wordsDestroyed % 5 === 0) {
+      const newLevel = Math.floor(wordsDestroyed / 5) + 1;
+      if (newLevel > level) {
+        setLevel(newLevel);
+        soundManager.play("laser");
+      }
+    }
+  }, [wordsDestroyed, level, soundManager]);
+
+  // Pausa solo con botón
+  const handlePause = () => {
+    if (timeLeft > 0) {
+      setIsPaused(!isPaused);
+      if (isPaused) {
+        soundManager.playMusic();
+        lastUpdateTimeRef.current = Date.now();
+        animationRef.current = requestAnimationFrame(gameLoop);
+      } else {
+        soundManager.stopMusic();
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current);
+        }
+      }
+    }
+  };
+
+  const handleGameOver = () => {
+    soundManager.stopMusic();
+    soundManager.play("explosion");
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+    }
+    setTimeout(() => {
+      onGameOver(score);
+    }, 2000);
+  };
+
+  const formatTime = (sec: number) =>
+    `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
+
+  const getWordColor = (word: WordState) => {
+    if (word.isActive) return "#00ff00";
+    if (word.typedLetters.length > 0) return "#ffff00";
+    return "#ffffff";
+  };
 
   // Iniciar juego
   useEffect(() => {
     soundManager.playMusic();
+    lastUpdateTimeRef.current = Date.now();
+    animationRef.current = requestAnimationFrame(gameLoop);
 
-    // Generar primera palabra
-    setTimeout(() => {
-      setWords([generateWord()]);
-    }, 1000);
-
-    // Spawn de palabras cada 3 segundos
+    // Más palabras
     const spawnInterval = setInterval(() => {
       if (!isPaused) {
         setWords((prev) => [...prev, generateWord()]);
       }
-    }, 3000);
+    }, 1500 - level * 80);
 
     return () => {
       clearInterval(spawnInterval);
       soundManager.stopMusic();
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
     };
-  }, [soundManager, generateWord, isPaused]);
+  }, [soundManager, generateWord, isPaused, gameLoop, level]);
 
-  // Timer del juego
+  // Timer
   useEffect(() => {
     if (isPaused || timeLeft <= 0) return;
 
@@ -128,48 +317,30 @@ export const Game: React.FC<GameProps> = ({
     return () => clearInterval(timer);
   }, [isPaused, timeLeft]);
 
-  // Actualizar posición de palabras
-  useEffect(() => {
-    if (isPaused) return;
-
-    const moveInterval = setInterval(() => {
-      setWords((prev) => {
-        const updatedWords = prev.map((word) => ({
-          ...word,
-          position: Math.min(100, word.position + word.speed),
-        }));
-
-        // Verificar si alguna palabra llegó al final
-        const wordReachedEnd = updatedWords.some((word) => word.position >= 95);
-        if (wordReachedEnd) {
-          handleGameOver();
-        }
-
-        return updatedWords;
-      });
-    }, 100);
-
-    return () => clearInterval(moveInterval);
-  }, [isPaused]);
-
-  // Manejar input del teclado
+  // ✅ SOLO INPUT DE PALABRAS - SIN CONTROLES DE PAUSA
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
       if (isPaused || timeLeft <= 0) return;
 
-      if (event.key === "Escape") {
-        handlePause();
-        return;
-      }
-
-      if (event.key === "p" || event.key === "P") {
-        handlePause();
-        return;
-      }
-
       if (/^[a-z]$/i.test(event.key)) {
         const key = event.key.toLowerCase();
         setCurrentInput((prev) => prev + key);
+
+        setWords((prev) => {
+          const hasActive = prev.some((w) => w.isActive);
+          if (!hasActive) {
+            const closest = findClosestWord(key);
+            if (closest) {
+              return prev.map((w) =>
+                w.id === closest.id
+                  ? { ...w, isActive: true }
+                  : { ...w, isActive: false }
+              );
+            }
+          }
+          return prev;
+        });
+
         handleWordInput(key);
       }
     };
@@ -178,118 +349,15 @@ export const Game: React.FC<GameProps> = ({
     return () => window.removeEventListener("keydown", handleKeyPress);
   }, [isPaused, timeLeft, words]);
 
-  const handleWordInput = (key: string) => {
-    setWords((prev) => {
-      let wordDestroyed = false;
-      let activeWordFound = false;
-
-      const updatedWords = prev
-        .map((word) => {
-          // Si la palabra está activa o empieza con la letra presionada
-          if (
-            (word.isActive || word.text.startsWith(key)) &&
-            !activeWordFound
-          ) {
-            activeWordFound = true;
-
-            // Verificar si es la letra correcta
-            const nextLetterIndex = word.typedLetters.length;
-            if (word.text[nextLetterIndex] === key) {
-              const newTypedLetters = word.typedLetters + key;
-
-              // Si la palabra está completa
-              if (newTypedLetters === word.text) {
-                wordDestroyed = true;
-                soundManager.play("explosion");
-                const points = calculateScore(
-                  word.text.length,
-                  word.speed,
-                  combo
-                );
-                setScore((prevScore) => prevScore + points);
-                setCombo((prevCombo) => prevCombo + 1);
-                return null; // Eliminar palabra
-              } else {
-                soundManager.play("laser");
-                return {
-                  ...word,
-                  typedLetters: newTypedLetters,
-                  isActive: true,
-                };
-              }
-            } else {
-              soundManager.play("error");
-              setCombo(0);
-              return { ...word, isActive: false };
-            }
-          }
-          return { ...word, isActive: false };
-        })
-        .filter(Boolean) as WordState[];
-
-      if (!wordDestroyed && !activeWordFound) {
-        soundManager.play("error");
-        setCombo(0);
-      }
-
-      return updatedWords;
-    });
-  };
-
-  const calculateScore = (
-    wordLength: number,
-    speed: number,
-    currentCombo: number
-  ): number => {
-    const baseScore = wordLength * 10;
-    const speedMultiplier = 1 + speed / 100;
-    const comboMultiplier = 1 + currentCombo * 0.1;
-    return Math.floor(baseScore * speedMultiplier * comboMultiplier);
-  };
-
-  const handlePause = () => {
-    if (timeLeft > 0) {
-      setIsPaused(!isPaused);
-      if (isPaused) {
-        soundManager.playMusic();
-      } else {
-        soundManager.stopMusic();
-      }
-    }
-  };
-
-  const handleGameOver = () => {
-    soundManager.stopMusic();
-    soundManager.play("explosion");
-    setTimeout(() => {
-      onGameOver(score);
-    }, 2000);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
-
-  const getWordColor = (word: WordState) => {
-    if (word.isActive) return "#00ff00";
-    if (word.typedLetters.length > 0) return "#ffff00";
-    return "#ffffff";
-  };
-
   return (
     <Container maxWidth="lg" sx={{ mt: 2, mb: 4 }}>
-      {/* Overlay de Pausa */}
+      {/* Overlay de pausa */}
       {isPaused && (
         <Box
           sx={{
             position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            backgroundColor: "rgba(0, 0, 0, 0.9)",
+            inset: 0,
+            backgroundColor: "rgba(0,0,0,0.95)",
             display: "flex",
             flexDirection: "column",
             justifyContent: "center",
@@ -299,42 +367,55 @@ export const Game: React.FC<GameProps> = ({
           }}
         >
           <Typography variant="h2" gutterBottom>
-            ⏸️ PAUSADO
+            ⏸️ JUEGO PAUSADO
           </Typography>
           <Typography variant="h5" gutterBottom>
-            Presiona P para reanudar
+            Puntuación Actual: {score}
           </Typography>
+          <Typography variant="h6" gutterBottom sx={{ mb: 4 }}>
+            Nivel: {level} | Palabras Destruidas: {wordsDestroyed}
+          </Typography>
+
           <Button
             variant="contained"
             size="large"
-            onClick={onExit}
-            sx={{ mt: 2, backgroundColor: "#ff4444" }}
+            onClick={handlePause}
+            sx={{ mb: 2, backgroundColor: "#00c853", minWidth: 200 }}
           >
-            Salir al Menú
+            ▶️ Continuar Juego
+          </Button>
+
+          <Button
+            variant="outlined"
+            size="large"
+            onClick={onExit}
+            sx={{ minWidth: 200, color: "white", borderColor: "white" }}
+          >
+            🏠 Salir al Menú
           </Button>
         </Box>
       )}
 
-      {/* Header del Juego */}
+      {/* Header */}
       <Paper
         elevation={8}
         sx={{
           p: 3,
           mb: 3,
-          background: "linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%)",
+          background: "linear-gradient(135deg, #1a1a1a, #2a2a2a)",
         }}
       >
         <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} md={4}>
+          <Grid item xs={12} md={3}>
             <Typography variant="h6" color="white">
               Jugador: <strong>{playerName}</strong>
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Modo: {gameMode} | Dispositivo: {deviceType}
+              Modo: {gameMode} | Nivel: {level}
             </Typography>
           </Grid>
 
-          <Grid item xs={12} md={4} sx={{ textAlign: "center" }}>
+          <Grid item xs={12} md={3} sx={{ textAlign: "center" }}>
             <Typography variant="h4" color="primary" fontWeight="bold">
               {score} PTS
             </Typography>
@@ -343,7 +424,16 @@ export const Game: React.FC<GameProps> = ({
             </Typography>
           </Grid>
 
-          <Grid item xs={12} md={4} sx={{ textAlign: "right" }}>
+          <Grid item xs={12} md={3} sx={{ textAlign: "center" }}>
+            <Typography variant="h6" color="success.main">
+              Destruidas: {wordsDestroyed}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Velocidad: {getLevelSpeed().toFixed(1)}x
+            </Typography>
+          </Grid>
+
+          <Grid item xs={12} md={3} sx={{ textAlign: "right" }}>
             <Typography
               variant="h5"
               color={timeLeft <= 30 ? "error" : "primary"}
@@ -361,19 +451,19 @@ export const Game: React.FC<GameProps> = ({
         </Grid>
       </Paper>
 
-      {/* Área de Juego */}
+      {/* Área de juego */}
       <Paper
         elevation={8}
         sx={{
           position: "relative",
           height: "500px",
-          background: "linear-gradient(180deg, #000033 0%, #001122 100%)",
+          background: "linear-gradient(180deg, #000033, #001122)",
           border: "3px solid #00ff00",
           borderRadius: 2,
           overflow: "hidden",
         }}
       >
-        {/* Nave (en la parte inferior) */}
+        {/* Nave */}
         <Box
           sx={{
             position: "absolute",
@@ -387,50 +477,76 @@ export const Game: React.FC<GameProps> = ({
           🚀
         </Box>
 
-        {/* Palabras cayendo */}
+        {/* ✅ LÁSER QUE SIGUE A LA PALABRA EN MOVIMIENTO */}
+        {currentLaser && (
+          <Box
+            sx={{
+              position: "absolute",
+              bottom: 60,
+              left: "50%",
+              width: "3px",
+              height: `calc(${100 - currentLaser.y}% - 60px)`,
+              background:
+                "linear-gradient(to top, #00ffff, #0066ff, transparent)",
+              transform: `translateX(-50%) rotate(${
+                Math.atan2(currentLaser.y - 80, currentLaser.x - 50) *
+                (180 / Math.PI)
+              }deg)`,
+              transformOrigin: "bottom center",
+              animation: "laserBeam 0.3s ease-out",
+              zIndex: 5,
+              "@keyframes laserBeam": {
+                "0%": { opacity: 0, transform: "translateX(-50%) scaleY(0)" },
+                "50%": { opacity: 1, transform: "translateX(-50%) scaleY(1)" },
+                "100%": { opacity: 0, transform: "translateX(-50%) scaleY(1)" },
+              },
+            }}
+          />
+        )}
+
+        {/* ✅ PALABRAS QUE SIGUEN MOVIÉNDOSE MIENTRAS SE ESCRIBEN */}
         {words.map((word) => (
           <Box
             key={word.id}
             sx={{
               position: "absolute",
-              left: `${Math.random() * 80 + 10}%`,
+              left: `${word.initialLeft}%`,
               top: `${word.position}%`,
               transform: "translateX(-50%)",
               color: getWordColor(word),
               fontFamily: "monospace",
               fontSize: deviceType === "pc" ? "1.5rem" : "1.2rem",
               fontWeight: "bold",
-              textShadow: "0 0 10px currentColor",
-              zIndex: 5,
-              transition: "top 0.1s linear",
+              textShadow: `
+                0 0 10px currentColor,
+                0 0 20px ${word.isActive ? "#00ff00" : "transparent"}
+              `,
+              transition: "none", // ✅ SIN TRANSICIÓN PARA MOVIMIENTO CONSTANTE
+              zIndex: 8,
+              padding: "2px 8px",
+              borderRadius: "4px",
+              backgroundColor: word.isActive
+                ? "rgba(0, 255, 0, 0.1)"
+                : "transparent",
+              border: word.isActive ? "1px solid #00ff00" : "none",
             }}
           >
-            <span style={{ color: "#ffff00" }}>{word.typedLetters}</span>
-            <span style={{ opacity: 0.7 }}>
+            {/* ✅ LETRAS ESCRITAS DESAPARECEN Y LAS RESTANTES SE VEN */}
+            <span
+              style={{
+                color: "#ffff00",
+                textDecoration:
+                  word.typedLetters.length > 0 ? "line-through" : "none",
+                opacity: word.typedLetters.length > 0 ? 0.7 : 1,
+              }}
+            >
+              {word.typedLetters}
+            </span>
+            <span style={{ opacity: 0.9 }}>
               {word.text.slice(word.typedLetters.length)}
             </span>
           </Box>
         ))}
-
-        {/* Láser (efecto visual) */}
-        {currentInput && (
-          <Box
-            sx={{
-              position: "absolute",
-              bottom: 60,
-              left: "50%",
-              width: "2px",
-              height: "70%",
-              background: "linear-gradient(to top, #00ffff, transparent)",
-              animation: "laser 0.3s ease-out",
-              zIndex: 2,
-              "@keyframes laser": {
-                "0%": { height: "0%", opacity: 1 },
-                "100%": { height: "70%", opacity: 0 },
-              },
-            }}
-          />
-        )}
 
         {/* Instrucciones */}
         <Box
@@ -439,16 +555,17 @@ export const Game: React.FC<GameProps> = ({
             bottom: 10,
             left: "50%",
             transform: "translateX(-50%)",
-            color: "rgba(255, 255, 255, 0.7)",
+            color: "rgba(255,255,255,.7)",
             fontSize: "0.8rem",
             textAlign: "center",
+            zIndex: 5,
           }}
         >
-          Presiona P para pausar | ESC para salir
+          Nivel {level} | Usa el teclado para destruir palabras
         </Box>
       </Paper>
 
-      {/* Panel de Control */}
+      {/* Controles */}
       <Grid container spacing={2} sx={{ mt: 2 }}>
         <Grid item xs={6}>
           <Button
@@ -457,36 +574,34 @@ export const Game: React.FC<GameProps> = ({
             onClick={handlePause}
             disabled={timeLeft <= 0}
           >
-            {isPaused ? "Reanudar (P)" : "Pausar (P)"}
+            {isPaused ? "▶️ Continuar" : "⏸️ Pausar"}
           </Button>
         </Grid>
+
         <Grid item xs={6}>
           <Button variant="outlined" color="error" fullWidth onClick={onExit}>
-            Salir (ESC)
+            🏠 Salir al Menú
           </Button>
         </Grid>
       </Grid>
 
-      {/* Estadísticas en Tiempo Real */}
+      {/* Estadísticas */}
       <Grid container spacing={2} sx={{ mt: 2 }}>
         <Grid item xs={12} md={4}>
-          <Card sx={{ background: "rgba(255, 255, 255, 0.05)" }}>
+          <Card sx={{ background: "rgba(255,255,255,0.05)" }}>
             <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Palabras Activas
-              </Typography>
+              <Typography color="text.secondary">Palabras Activas</Typography>
               <Typography variant="h6" color="primary">
                 {words.length}
               </Typography>
             </CardContent>
           </Card>
         </Grid>
+
         <Grid item xs={12} md={4}>
-          <Card sx={{ background: "rgba(255, 255, 255, 0.05)" }}>
+          <Card sx={{ background: "rgba(255,255,255,0.05)" }}>
             <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Input Actual
-              </Typography>
+              <Typography color="text.secondary">Input Actual</Typography>
               <Typography
                 variant="h6"
                 color="success.main"
@@ -497,14 +612,13 @@ export const Game: React.FC<GameProps> = ({
             </CardContent>
           </Card>
         </Grid>
+
         <Grid item xs={12} md={4}>
-          <Card sx={{ background: "rgba(255, 255, 255, 0.05)" }}>
+          <Card sx={{ background: "rgba(255,255,255,0.05)" }}>
             <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Velocidad
-              </Typography>
+              <Typography color="text.secondary">Velocidad Nivel</Typography>
               <Typography variant="h6" color="warning.main">
-                {deviceType === "pc" ? "Alta" : "Media"}
+                {getLevelSpeed().toFixed(1)}x
               </Typography>
             </CardContent>
           </Card>
